@@ -42,6 +42,12 @@ DEFAULT_DROP_COLUMNS = {
     "num_gift_live_1hr",
     "num_gift_live_3hr",
     "num_like_live_15min",
+    # Drop high-risk recency/skip leakage features by default.
+    "time_since_last_click_user",
+    "tslc_missing",
+    "consecutive_skips_user",
+    "time_since_last_click_user_streamer",
+    "tslc_user_streamer_missing",
 }
 
 
@@ -228,8 +234,9 @@ def build_feature_columns(df: pd.DataFrame, disable_id_features: bool = False) -
         "live_start_hour",
     ]
     cat_cols = [c for c in base_cat + suffix_cat + extra_cat if c in df.columns and c not in DEFAULT_DROP_COLUMNS]
+    id_cols = {"user_id", "live_id", "streamer_id"}
     if disable_id_features:
-        cat_cols = [c for c in cat_cols if c not in {"user_id", "live_id", "streamer_id"}]
+        cat_cols = [c for c in cat_cols if c not in id_cols]
 
     exclude = set(cat_cols + ALL_TASKS + ["watch_live_time", "live_id"])
     exclude.update(DEFAULT_DROP_COLUMNS)
@@ -241,6 +248,8 @@ def build_feature_columns(df: pd.DataFrame, disable_id_features: bool = False) -
     exclude.update(non_feature)
 
     num_cols = [c for c in df.columns if c not in exclude]
+    if disable_id_features:
+        num_cols = [c for c in num_cols if c not in id_cols]
     for c in FORCE_NUMERIC_BINARY:
         if c in df.columns and c not in num_cols:
             num_cols.append(c)
@@ -288,7 +297,10 @@ def prepare_data(
         cat_x = encode_cat(df, cat_cols, cat_maps)
         num_x = encode_num(df, num_cols)
         ys = {k: pd.to_numeric(df[k], errors="coerce").fillna(0).to_numpy(dtype=np.float32) for k in ALL_TASKS}
-        user_ids = pd.to_numeric(df.get("user_id"), errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
+        if "user_id" in df.columns:
+            user_ids = pd.to_numeric(df["user_id"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
+        else:
+            user_ids = np.full(len(df), -1, dtype=np.int64)
         return RankingDataset(cat_x, num_x, ys, user_ids)
 
     return feature_pack, make_ds(train_df), make_ds(val_df), make_ds(test_df)

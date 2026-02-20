@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 import pandas as pd
 
 from TTNN_data_processer import deduplicate, split_by_date
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable=None, **kwargs):
+        return iterable if iterable is not None else []
 
 # Requested feature set (from provided spec/screenshot), plus required labels.
 USER_CATEGORICAL = [
@@ -226,7 +231,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable deduplication before splitting (disabled by default for ranking stage).",
     )
+    parser.add_argument(
+        "--read-chunksize",
+        type=int,
+        default=1_000_000,
+        help="CSV read chunksize for progress visualization. Set <=0 to disable chunked reading.",
+    )
     return parser.parse_args()
+
+
+def read_csv_with_progress(path: Path, chunksize: int) -> pd.DataFrame:
+    if chunksize <= 0:
+        return pd.read_csv(path, low_memory=False)
+
+    chunks: List[pd.DataFrame] = []
+    for chunk in tqdm(
+        pd.read_csv(path, low_memory=False, chunksize=chunksize),
+        desc="read_csv",
+        unit="chunk",
+    ):
+        chunks.append(chunk)
+    if not chunks:
+        return pd.DataFrame()
+    return pd.concat(chunks, ignore_index=True)
 
 
 def add_multitask_labels(df: pd.DataFrame) -> pd.DataFrame:
@@ -298,13 +325,15 @@ def _filter_to_requested_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> None:
     args = parse_args()
+    stage_bar = tqdm(total=6, desc="dcnv2_data_processer", unit="stage")
 
     print(f"[dcnv2_data_processer] reading: {args.input}")
-    df = pd.read_csv(args.input, low_memory=False)
+    df = read_csv_with_progress(args.input, chunksize=args.read_chunksize)
     if "imp_timestamp" not in df.columns:
         raise ValueError("`imp_timestamp` column is required.")
     df["imp_timestamp"] = pd.to_datetime(df["imp_timestamp"], errors="coerce")
     print(f"[dcnv2_data_processer] raw rows={len(df)} cols={df.shape[1]}")
+    stage_bar.update(1)
 
     if args.dedup:
         base_df = deduplicate(df)
@@ -312,9 +341,12 @@ def main() -> None:
     else:
         base_df = df
         print("[dcnv2_data_processer] dedup skipped (default)")
+    stage_bar.update(1)
 
     base_df = add_multitask_labels(base_df)
+    stage_bar.update(1)
     splits = split_by_date(base_df)
+    stage_bar.update(1)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     output_map = {
@@ -322,12 +354,14 @@ def main() -> None:
         "val": args.output_dir / f"{args.output_prefix}_val.csv",
         "test": args.output_dir / f"{args.output_prefix}_test.csv",
     }
-    for split_name, split_df in splits.items():
+    for split_name, split_df in tqdm(splits.items(), desc="save_splits", unit="split"):
         filtered = _filter_to_requested_columns(split_df)
         _print_split_summary(split_name, filtered)
         out_path = output_map[split_name]
         filtered.to_csv(out_path, index=False)
         print(f"[dcnv2_data_processer] saved {split_name} -> {out_path}")
+    stage_bar.update(2)
+    stage_bar.close()
 
 
 if __name__ == "__main__":
