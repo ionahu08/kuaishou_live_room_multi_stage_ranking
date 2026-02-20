@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 
-DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "draft_sample.csv"
+DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "full_data.csv"
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
