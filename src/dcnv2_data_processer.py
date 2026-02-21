@@ -10,8 +10,15 @@ from TTNN_data_processer import deduplicate, split_by_date
 try:
     from tqdm.auto import tqdm
 except Exception:  # pragma: no cover
+    class _NoOpTqdm:
+        def update(self, n: int = 1) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
     def tqdm(iterable=None, **kwargs):
-        return iterable if iterable is not None else []
+        return iterable if iterable is not None else _NoOpTqdm()
 
 # Requested feature set (from provided spec/screenshot), plus required labels.
 USER_CATEGORICAL = [
