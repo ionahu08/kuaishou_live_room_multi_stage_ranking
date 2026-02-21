@@ -80,7 +80,7 @@ def _pick_chunk_best(chunk: pd.DataFrame, start_row: int) -> pd.DataFrame:
         ]
         cand = pd.concat([clicked, non_clicked], ignore_index=True)
 
-    ts_int = cand["_ts"].view("int64")
+    ts_int = cand["_ts"].astype("int64", copy=False)
     cand["ts_int"] = ts_int.where(cand["_ts"].notna(), pd.NA).astype("Int64")
     cand["has_click"] = cand["is_click"].astype("int8")
 
