@@ -208,6 +208,30 @@ ALIAS_MAP = {
     "time_since_live_start [ms]": "time_since_live_start",
     "ctr_trend_room": "ctr_trend_room",
 }
+TRAIN_START_DATE = pd.to_datetime("2025-05-04").date()
+TRAIN_END_DATE = pd.to_datetime("2025-05-18").date()
+VAL_START_DATE = pd.to_datetime("2025-05-19").date()
+VAL_END_DATE = pd.to_datetime("2025-05-22").date()
+TEST_START_DATE = pd.to_datetime("2025-05-23").date()
+
+
+def _requested_columns_resolved() -> List[str]:
+    requested = (
+        USER_CATEGORICAL
+        + USER_NUMERIC
+        + ROOM_STREAMER_CATEGORICAL
+        + ROOM_STREAMER_NUMERIC
+        + INTERACTION_CATEGORICAL
+        + LABEL_COLUMNS
+    )
+    resolved = [ALIAS_MAP.get(c, c) for c in requested]
+    seen = set()
+    ordered = []
+    for c in resolved:
+        if c not in seen:
+            ordered.append(c)
+            seen.add(c)
+    return ordered
 
 
 def parse_args() -> argparse.Namespace:
@@ -305,34 +329,87 @@ def _print_split_summary(name: str, df: pd.DataFrame) -> None:
     print(f"{name}: {summary}")
 
 
-def _filter_to_requested_columns(df: pd.DataFrame) -> pd.DataFrame:
-    requested = (
-        USER_CATEGORICAL
-        + USER_NUMERIC
-        + ROOM_STREAMER_CATEGORICAL
-        + ROOM_STREAMER_NUMERIC
-        + INTERACTION_CATEGORICAL
-        + LABEL_COLUMNS
-    )
-    resolved = [ALIAS_MAP.get(c, c) for c in requested]
-    keep_cols = [c for c in resolved if c in df.columns]
-    missing = [c for c in resolved if c not in df.columns]
-    if missing:
+def _filter_to_requested_columns(df: pd.DataFrame, resolved_order: List[str], warn_missing: bool = True) -> pd.DataFrame:
+    keep_cols = [c for c in resolved_order if c in df.columns]
+    missing = [c for c in resolved_order if c not in df.columns]
+    if warn_missing and missing:
         print(f"[dcnv2_data_processer] warning: {len(missing)} requested columns missing")
         print(f"[dcnv2_data_processer] missing sample: {missing[:20]}")
-    # preserve order, drop duplicates
-    seen = set()
-    ordered = []
-    for c in keep_cols:
-        if c not in seen:
-            ordered.append(c)
-            seen.add(c)
-    return df[ordered].copy()
+    return df[keep_cols].copy()
+
+
+def _split_masks_by_date(ts: pd.Series) -> Dict[str, pd.Series]:
+    imp_date = ts.dt.date
+    return {
+        "train": (imp_date >= TRAIN_START_DATE) & (imp_date <= TRAIN_END_DATE),
+        "val": (imp_date >= VAL_START_DATE) & (imp_date <= VAL_END_DATE),
+        "test": imp_date >= TEST_START_DATE,
+    }
+
+
+def _build_output_map(args: argparse.Namespace) -> Dict[str, Path]:
+    return {
+        "train": args.output_dir / f"{args.output_prefix}_train.csv",
+        "val": args.output_dir / f"{args.output_prefix}_val.csv",
+        "test": args.output_dir / f"{args.output_prefix}_test.csv",
+    }
+
+
+def _stream_split_save(args: argparse.Namespace) -> None:
+    print("[dcnv2_data_processer] using streaming split/save mode (dedup disabled)")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_map = _build_output_map(args)
+    for path in output_map.values():
+        if path.exists():
+            path.unlink()
+
+    resolved_order = _requested_columns_resolved()
+    headers_written = {k: False for k in output_map}
+    split_rows = {k: 0 for k in output_map}
+    total_rows = 0
+    split_cols: Dict[str, int] = {k: 0 for k in output_map}
+
+    reader = pd.read_csv(args.input, low_memory=False, chunksize=args.read_chunksize)
+    for idx, chunk in enumerate(tqdm(reader, desc="stream_split_save", unit="chunk")):
+        total_rows += len(chunk)
+        if "imp_timestamp" not in chunk.columns:
+            raise ValueError("`imp_timestamp` column is required.")
+        chunk["imp_timestamp"] = pd.to_datetime(chunk["imp_timestamp"], errors="coerce")
+        chunk = add_multitask_labels(chunk)
+        masks = _split_masks_by_date(chunk["imp_timestamp"])
+        filtered = _filter_to_requested_columns(chunk, resolved_order=resolved_order, warn_missing=(idx == 0))
+        for split_name, mask in masks.items():
+            out_df = filtered.loc[mask]
+            if out_df.empty:
+                continue
+            split_rows[split_name] += len(out_df)
+            if split_cols[split_name] == 0:
+                split_cols[split_name] = out_df.shape[1]
+            out_df.to_csv(output_map[split_name], mode="a", header=not headers_written[split_name], index=False)
+            headers_written[split_name] = True
+
+    print(f"[dcnv2_data_processer] raw rows={total_rows}")
+    for split_name in ["train", "val", "test"]:
+        label_cols = [c for c in LABEL_COLUMNS if c in resolved_order]
+        summary: Dict[str, object] = {
+            "rows": int(split_rows[split_name]),
+            "total_columns": int(split_cols[split_name]),
+            "label_columns": [c for c in label_cols if c in resolved_order[: split_cols[split_name] or len(resolved_order)]],
+            "num_labels": int(len([c for c in label_cols if c in resolved_order])),
+        }
+        print(f"{split_name}: {summary}")
+        print(f"[dcnv2_data_processer] saved {split_name} -> {output_map[split_name]}")
 
 
 def main() -> None:
     args = parse_args()
     stage_bar = tqdm(total=6, desc="dcnv2_data_processer", unit="stage")
+
+    if args.read_chunksize > 0 and not args.dedup:
+        _stream_split_save(args)
+        stage_bar.update(6)
+        stage_bar.close()
+        return
 
     print(f"[dcnv2_data_processer] reading: {args.input}")
     df = read_csv_with_progress(args.input, chunksize=args.read_chunksize)
@@ -356,13 +433,10 @@ def main() -> None:
     stage_bar.update(1)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    output_map = {
-        "train": args.output_dir / f"{args.output_prefix}_train.csv",
-        "val": args.output_dir / f"{args.output_prefix}_val.csv",
-        "test": args.output_dir / f"{args.output_prefix}_test.csv",
-    }
+    output_map = _build_output_map(args)
+    resolved_order = _requested_columns_resolved()
     for split_name, split_df in tqdm(splits.items(), desc="save_splits", unit="split"):
-        filtered = _filter_to_requested_columns(split_df)
+        filtered = _filter_to_requested_columns(split_df, resolved_order=resolved_order)
         _print_split_summary(split_name, filtered)
         out_path = output_map[split_name]
         filtered.to_csv(out_path, index=False)
