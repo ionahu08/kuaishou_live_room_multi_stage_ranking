@@ -187,6 +187,24 @@ Computation notes:
   - `rmse_watch_live_time_log`: **0.674929**
 - Test prediction output rows: **2,221,293** (`outputs/dcnv2_rerun_with_id_v1_test_preds.csv`).
 
+### TTNN test results (retrieval stage)
+- Evaluation split: `data/TTNN_full_test.csv`.
+- Checkpoint family: `models/best_tower.pt` (and named best variants under `models/`).
+- Notes:
+  - A separate standalone `two_tower_train` test log snapshot is not present under `logs/`.
+  - TTNN retrieval metrics below are taken from saved `pipeline_eval*_summary.json` artifacts on the TTNN test split.
+
+| Run | topK | multi_interest_k | mean recall@K | users with positives | exported topK rows |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `pipeline_eval_grid_v3_topk50_mi1` | 50 | 1 | 0.006754 | 19,921 | 1,136,050 |
+| `pipeline_eval_grid_v3_topk50_mi2` | 50 | 2 | 0.068207 | 19,921 | 1,136,050 |
+| `pipeline_eval_grid_v3_topk100_mi1` | 100 | 1 | 0.010852 | 19,921 | 2,272,100 |
+| `pipeline_eval_test_v1` / `pipeline_eval_grid_v3_topk100_mi2` | 100 | 2 | 0.073070 | 19,921 | 2,272,100 |
+| `pipeline_eval_grid_v3_topk200_mi1` | 200 | 1 | 0.018603 | 19,921 | 4,544,200 |
+
+- Key takeaway:
+  - `multi_interest_k=2` substantially improves TTNN recall at the same K (for example at `K=100`: **0.073070** vs **0.010852**).
+
 ### End-to-end pipeline results (`outputs/pipeline_eval_*_summary.json`)
 - `pipeline_eval_test_v1` (`topk=100`, `mi=2`):
   - TTNN recall@100 mean: **0.07307**
