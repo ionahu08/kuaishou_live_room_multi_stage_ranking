@@ -1,12 +1,18 @@
 from typing import Dict, List, Tuple
 
-import faiss
 import numpy as np
 import pandas as pd
 import torch
 
 from ..config import ITEM_CATEGORICAL, ITEM_NUMERIC, USER_CATEGORICAL, USER_NUMERIC
 from ..models import TwoTowerModel
+
+try:
+    import faiss  # type: ignore
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "faiss is required for ANN retrieval. Install faiss-cpu/faiss-gpu and run with that environment."
+    ) from exc
 
 
 def build_item_pool(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -99,10 +105,12 @@ def ann_topk(
     user_vecs: np.ndarray,
     ks: List[int],
 ) -> Tuple[np.ndarray, np.ndarray]:
-    index = faiss.IndexFlatIP(item_vecs.shape[1])
-    index.add(item_vecs.astype(np.float32))
     max_k = max(ks)
-    return index.search(user_vecs.astype(np.float32), max_k)
+    item_vecs = item_vecs.astype(np.float32, copy=False)
+    user_vecs = user_vecs.astype(np.float32, copy=False)
+    index = faiss.IndexFlatIP(item_vecs.shape[1])
+    index.add(item_vecs)
+    return index.search(user_vecs, max_k)
 
 
 def merge_multi_interest_topk(
